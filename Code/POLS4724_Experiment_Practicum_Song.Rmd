@@ -1,0 +1,268 @@
+---
+title: "POLS4724 Experiment Practicum"
+author: "Yaowensong Song"
+date: "2026-11-16"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+On the water market we can see many brands marketing harshly on the minerals and originality, which implies potential health benefits. I try to investigate the water quality influence in a narrower sense, not on human subjects but on scallions to partially examine the treatment effect of water quality on resprouting.
+If the touted water nutrition is as large, we should at least observe some resprouting advantage for scallions whose roots are soaked into mineral water than those in distilled water. If we find no evidence for such an effect, it suggests that the nutritional claims on human subjects should be perceived conservatively.
+
+
+## Research Design
+I purchased 30 scallions from two nearby local supermarkets (A and B). The scallions were sold in half-dozen, and I bought 2 half-dozens from supermarket A and 3 from supermarket B. The half-dozen constitute a block for a design to reduce sampling variability. I numbered all 30 scallions following the block order (i.e., 1-6 in block 1, 7-12 in block 2, etc.). I then conducted complete random sampling within each block (mineral water = M or 1, distilled watrer = D or 0), having 3 scallions treated and 3 untreated in each block. After assigning treatment status, I randomize their spatial positioning in a 10 by 3 matrix such that each scallion are roughly 10 centimeters away from each other both horizontally and vertically on the table. Later, their spatial position will be converted into pretreatment covariates to adjust for (subjects in the first row were coded as 0 in row distance, and adding 10 by each row; subjects in the first column were coded 20 in column distance, and subtracting 10 by each column since the third column is the closest to the window) sunshine exposure and temperature change with respect to position on the table (see how the experiment was conducted in figures below).
+```{r, echo=FALSE, out.width="50%"}
+knitr::include_graphics(c("Fig_1.png", "Fig_2.png"))
+```
+
+
+Before treatment started, I cut all scallions into the same length to eliminate length variations out of my control (e.g., supermarkets have cut leaves that do not look good). The residual height was determined such that most of the green parts were removed. I also measured the weight and perimeter of the residual roots, as well as the second longest root hair of each root.
+Then, I soak the scallions into the water assigned to each. I control the amount of water in each cup as 100 ml. I also used tape to fix the scallions to the cup wall, with the cut edge right being at the level of the cup top. This action, besides isolating treatment effect, also makes sure that there is enough room for root hair to grow.
+After about 5.5 days, I measured the post-treatment outcomes with 4 variables: total height of the new sprouts, the max height of the new sprouts, the total weight of the whole scallion after drying off the moisture, and the total weight of the new sprouts. When the measurement of height varies in measurement perspective (some scallions are not completely straight).
+
+## Assumption check
+Excludability and non-interference assumptions are satisfied by design, since the water assignment cannot directly influence sprouting as well as through other channels, and treatment status of any subject is not related to the other's. Here I only test the random assignment assumption.
+
+\newpage
+
+### Balance test
+I first check the balance between the 15 treated and 15 untreated subjects, and find no significant difference between the two groups in covariate values, suggesting satisfying random assignment.
+
+```{r, echo = FALSE}
+d <- read.csv("POLS4724_Data_Song.csv")
+d$row_dist <- 10 * (d$row_num - 1)
+d$col_dist <- 10 * (3 - d$col_num)
+
+## Balance test
+covariates <- c("w_pre", "peri_pre", "root_length_pre")
+balance <- do.call(rbind, lapply(covariates, function(v) {
+  m <- d[[v]][d$treatment == 1]
+  d_group <- d[[v]][d$treatment == 0]
+  pooled_sd <- sqrt((var(m, na.rm = TRUE) + var(d_group, na.rm = TRUE)) / 2)
+  
+  data.frame(
+    covariate = v,
+    mean_M = mean(m, na.rm = TRUE),
+    mean_D = mean(d_group, na.rm = TRUE),
+    SMD = (mean(m, na.rm = TRUE) - mean(d_group, na.rm = TRUE)) / pooled_sd,
+    p_value = t.test(m, d_group)$p.value
+  )
+}))
+
+print(balance, digits = 3, row.names = FALSE)
+```
+
+I then check the balance between the 3 treated and 3 untreated subjects within each block with randomization inference, and also find no p-value smaller than 0.05, further suggesting satisfying random assignment.
+
+```{r, echo = FALSE}
+design <- randomizr::declare_ra(
+  blocks = d$block,
+  block_m = rep(3L, length(unique(d$block)))
+)
+
+covariates <- c("w_pre", "peri_pre", "root_length_pre")
+set.seed(4724)
+
+for (v in covariates) {
+  fit <- ri2::conduct_ri(
+    formula = reformulate("treatment", response = v),
+    assignment = "treatment",
+    declaration = design,
+    sharp_hypothesis = 0,
+    data = d,
+    sims = 100000,
+    p = "two-tailed"
+  )
+
+  cat("\n", v, "\n", sep = "")
+  print(summary(fit))
+  print(plot(fit) + ggplot2::labs(title = paste("RI balance test:", v)))
+}
+```
+
+\newpage
+
+## Results
+I show estimates across four outcomes measurements, and for each outcome, I show estimates generated by three estimators: Block DIM, Block DID (only for total weights, with pretreatment weight subtracted), and OLS with blocking variable and covariates adjusted for. Both DIM and OLS estimates gives insignificant results at 0.05 level.
+For DIM, I also show randomization inference results for p-values based on sharp null. The p-values based on randomization inference also support this claim (p = 0.2866, 0.2508, 0.2978, and 0.1442 for each outcome), with failure to reject the null at 5% significance level. The block DID, however, gives negative ATE estimates for weight changes.
+
+```{r, echo = FALSE}
+# Results table
+results <- data.frame(
+  outcome = c("total_h", "max_h", "total_w", "new_w"),
+  DIM = NA_real_,
+  DIM_SE = NA_real_,
+  DID = NA_real_,
+  DID_SE = NA_real_,
+  Regression = NA_real_,
+  Regression_SE = NA_real_
+)
+
+## Block DIM
+blocks <- sort(unique(d$block))
+
+for (outcome in c("total_h", "max_h", "total_w", "new_w")) {
+  dim_block <- var_block <- numeric(length(blocks))
+  
+  for (i in seq_along(blocks)) {
+    in_block <- d$block == blocks[i]
+    treated <- d[[outcome]][in_block & d$treatment == 1]
+    control <- d[[outcome]][in_block & d$treatment == 0]
+    
+    dim_block[i] <- mean(treated) - mean(control)
+    var_block[i] <- var(treated) / length(treated) +
+      var(control) / length(control)
+  }
+  
+  estimate <- mean(dim_block)
+  SE <- sqrt(sum(var_block)) / length(blocks)
+  
+  i_row <- match(outcome, results$outcome)
+  results$DIM[i_row] <- estimate
+  results$DIM_SE[i_row] <- SE
+}
+
+## Block DID
+for (outcome in c("total_w")) {
+  change <- d[[outcome]] - d$w_pre
+  did_block <- var_block <- numeric(length(blocks))
+  
+  for (i in seq_along(blocks)) {
+    in_block <- d$block == blocks[i]
+    treated <- change[in_block & d$treatment == 1]
+    control <- change[in_block & d$treatment == 0]
+    
+    did_block[i] <- mean(treated) - mean(control)
+    var_block[i] <- var(treated) / length(treated) +
+      var(control) / length(control)
+  }
+  
+  estimate <- mean(did_block)
+  SE <- sqrt(sum(var_block)) / length(blocks)
+  
+  i_row <- match(outcome, results$outcome)
+  results$DID[i_row] <- estimate
+  results$DID_SE[i_row] <- SE
+}
+
+## Regression
+for (outcome in c("total_h", "max_h", "total_w", "new_w")) {
+  model <- lm(
+    reformulate(
+      c("treatment", "w_pre", "peri_pre", "root_length_pre",
+        "row_dist", "col_dist", "factor(block)"),
+      response = outcome
+    ),
+    data = d
+  )
+  
+  result <- coef(summary(model))["treatment", c("Estimate", "Std. Error")]
+  i_row <- match(outcome, results$outcome)
+  results$Regression[i_row] <- result["Estimate"]
+  results$Regression_SE[i_row] <- result["Std. Error"]
+}
+
+
+final_table <- data.frame(
+  Outcome = results$outcome,
+  `Block DIM` = sprintf("%.4f (%.4f)", results$DIM, results$DIM_SE),
+  `Block DID` = sprintf("%.4f (%.4f)", results$DID, results$DID_SE),
+  `Adjusted regression` = sprintf("%.4f (%.4f)", results$Regression,
+                                  results$Regression_SE),
+  check.names = FALSE
+)
+
+print(final_table, row.names = FALSE, right = FALSE)
+```
+
+I also visualize the block DIM estimates with 95% CIs as well as by-block estimates and 95% CIs.
+
+```{r, echo = FALSE}
+library(ggplot2)
+
+outcomes <- c("total_h", "max_h", "total_w", "new_w")
+blocks <- sort(unique(d$block))
+
+plot_data <- do.call(rbind, lapply(outcomes, function(outcome) {
+  estimate <- se <- numeric(length(blocks))
+
+  for (i in seq_along(blocks)) {
+    in_block <- d$block == blocks[i]
+    treated <- d[[outcome]][in_block & d$treatment == 1]
+    control <- d[[outcome]][in_block & d$treatment == 0]
+
+    estimate[i] <- mean(treated) - mean(control)
+    se[i] <- sqrt(var(treated) / length(treated) +
+                  var(control) / length(control))
+  }
+
+  data.frame(
+    outcome = outcome,
+    group = c(paste("Block", blocks), "Overall ATE"),
+    estimate = c(estimate, mean(estimate)),
+    se = c(se, sqrt(sum(se^2)) / length(blocks)),
+    type = c(rep("Block", length(blocks)), "Overall")
+  )
+}))
+
+plot_data$outcome <- factor(plot_data$outcome, levels = outcomes)
+plot_data$group <- factor(
+  plot_data$group,
+  levels = c(rev(paste("Block", blocks)), "Overall ATE")
+)
+plot_data$lower <- plot_data$estimate - 1.96 * plot_data$se
+plot_data$upper <- plot_data$estimate + 1.96 * plot_data$se
+
+ggplot(plot_data, aes(estimate, group, color = type)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey55") +
+  geom_segment(aes(x = lower, xend = upper, yend = group),
+               linewidth = 0.8, alpha = 1) +
+  geom_point(aes(size = type), alpha = 1) +
+  facet_wrap(~ outcome, scales = "free_x") +
+  scale_color_manual(values = c(Block = "#6596C2", Overall = "#123C69")) +
+  scale_size_manual(values = c(Block = 2.4, Overall = 3.5)) +
+  labs(x = "Treatment effect (M minus D)", y = NULL,
+       caption = "Bars show approximate 95% confidence intervals (estimate ± 1.96 SE).") +
+  theme_minimal() +
+  theme(legend.position = "none")
+```
+The RI results:
+```{r, echo = FALSE}
+
+# RI
+design <- randomizr::declare_ra(
+  blocks = d$block,
+  block_m = rep(3L, length(unique(d$block)))
+)
+
+set.seed(12345)
+
+for (outcome in c("total_h", "max_h", "total_w", "new_w")) {
+  fit <- ri2::conduct_ri(
+    formula = reformulate("treatment", response = outcome),
+    assignment = "treatment",
+    declaration = design,
+    sharp_hypothesis = 0,
+    data = d,
+    sims = 100000,
+    p = "upper"
+  )
+  
+  cat("\n", outcome, "\n", sep = "")
+  print(summary(fit))
+  print(plot(fit) + ggplot2::labs(title = paste("RI test for block DIM:", outcome)))
+}
+```
+
+
+
+## Conclusion
+In conclusion, although the effect size estimated by DIM and OLS estimators are positive, we cannot reject zero effect based on our randomization inference results. Therefore, we fail to reject the null hypothesis that mineral water does not improve resprouting capacity. We may further infer that the nutritional aspect of water does little to human bodies. It is worth noting that the sample we get are based on two local markets, and the origin of the goods is likely to be the same. Also, supermarkets or pre-step suppliers may manually select scallions looking better for sale. What I got from the rack can face challenges in random sampling, thus causing a potential lack of external validity. Later research should expand sample size and sample source. Also, I only tested the effects of water quality on resprouting, representing only limited part of biophysical processes that may constitute important biological mechanisms for physical wellbeing. The conclusion made here only infers a trivial effects on human body, while not making decisive claims regarding it.
+
+
+
